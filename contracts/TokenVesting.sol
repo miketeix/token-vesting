@@ -8,89 +8,87 @@ import "zeppelin-solidity/contracts/math/SafeMath.sol";
 
 /**
  * @title TokenVesting
- * @dev A token holder contract that can release its token balance gradually like a
- * typical vesting scheme, with a cliff and vesting period. Owner deploys and
- * calls transfer on ERC-20 token contract of choice using deployed TokenVesting
- * contract address as the to address.  Optionally revocable by the owner.
+ * @dev A token holder contract that can release its token balance gradually
+ * like a typical vesting scheme, with a cliff and vesting period. After
+ * deployment, the owner must transfer ownership of some ERC-20 tokens to the
+ * address of this deployed TokenVesting contract. Revocable by the
+ * owner.
  */
 contract TokenVesting is Ownable {
   using SafeMath for uint256;
   using SafeERC20 for ERC20Basic;
 
-  event Withdrawal(int256 amount, ERC20Basic token);
+  event Withdrawal(uint256 amount);
   event Revoked();
 
-  // beneficiary address, tokens tokens to be sent there upon release
-  address public beneficiary;
 
-  uint256 public start // unix timestamp;
-  uint256 public cliff // in seconds;
-  uint256 public duration // in seconds;
+  ERC20Basic public token; // ERC20 token
+  address public beneficiary; // beneficiary address, tokens tokens to be sent there upon release
+  uint256 public start; // unix timestamp;
+  uint256 public cliff; // in seconds;
+  uint256 public duration; // in seconds;
 
-  bool public revocable;
-
-  mapping (address => uint256) public withdrawnAmount;
-  mapping (address => bool) public revoked;
+  uint256 public withdrawnAmount;
+  bool public revoked;
 
   /**
-   * @dev Creates a vesting contract that vests its balance of any ERC20 token to the
-   * _beneficiary, gradually in a linear fashion until _start + _duration. By then all
-   * of the balance will have vested.
+   * @dev Creates a vesting contract that vests its balance of any ERC20 token _token to the
+   * _beneficiary, gradually in a linear fashion until _start + _duration,  afterwhich all
+   * of the balance will have vested... Vested tokens are only withdrawable after _start + _cliff.
+   * @param _token address of the ERC20 token contract whose tokens will be vested by this contract
    * @param _beneficiary address of the beneficiary to whom vested tokens are transferred
+   * @param _start unix timestamp of when the contract should start
    * @param _cliff duration in seconds of the cliff in which tokens will begin to vest
    * @param _duration duration in seconds of the period in which the tokens will vest
-   * @param _revocable whether the vesting is revocable or not
    */
   function TokenVesting(
+    ERC20Basic _token,
     address _beneficiary,
     uint256 _start,
     uint256 _cliff,
-    uint256 _duration,
-    bool _revocable
+    uint256 _duration
   )
     public
   {
     require(_beneficiary != address(0));
     require(_cliff <= _duration);
 
+    token = _token; //ERC20Basic(_token);
     beneficiary = _beneficiary;
-    revocable = _revocable;
-    duration = _duration;
     cliff = _start.add(_cliff);
     start = _start;
+    duration = _duration;
   }
 
   /**
-   * @notice Transfers vested tokens to beneficiary.
-   * @param token ERC20 token which is being vested
+   * @notice Transfers vested tokens to beneficiary. Only callable by beneficiary
    */
-  function withdraw(ERC20Basic token) public {
+  function withdraw() public {
+    require(block.timestamp > cliff);
     require(msg.sender == beneficiary);
 
-    uint256 withdrawable = withdrawableAmount(token);
+    uint256 withdrawable = withdrawableAmount();
     require(withdrawable > 0);
 
-    withdrawnAmount[token] = withdrawnAmount[token].add(withdrawable);
+    withdrawnAmount = withdrawnAmount.add(withdrawable);
 
     token.safeTransfer(beneficiary, withdrawable);
 
-    emit Withdrawal(withdrawable, address(token));
+    emit Withdrawal(withdrawable);
   }
 
   /**
    * @notice Allows the owner to revoke the vesting. Tokens already vested
-   * remain in the contract, the rest are returned to the owner.
-   * @param token ERC20 token which is being vested
+   * remain with the contract, the rest are returned to the owner.
    */
-  function revoke(ERC20Basic token) public onlyOwner {
-    require(revocable);
-    require(!revoked[token]);
+  function revoke() public onlyOwner {
+    require(!revoked);
 
     uint256 balance = token.balanceOf(this);
-    uint256 withdrawable = withdrawableAmount(token);
+    uint256 withdrawable = withdrawableAmount();
     uint256 refund = balance.sub(withdrawable);
 
-    revoked[token] = true;
+    revoked = true;
 
     token.safeTransfer(owner, refund);
 
@@ -98,27 +96,25 @@ contract TokenVesting is Ownable {
   }
 
   /**
-   * @dev Calculates the amount that has already vested but hasn't been released yet.
-   * @param token ERC20 token which is being vested
+   * @dev Calculates the amount that has already vested but hasn't been withdrawn yet.
    */
-  function withdrawableAmount(ERC20Basic token) public view returns (uint256) {
-    return vestedAmount(token).sub(withdrawnAmount[token]);
+  function withdrawableAmount() public view returns (uint256) {
+    return vestedAmount().sub(withdrawnAmount);
   }
 
   /**
    * @dev Calculates the amount that has already vested.
-   * @param token ERC20 token which is being vested
    */
-  function vestedAmount(ERC20Basic token) public view returns (uint256) {
-    uint256 currentBalance = token.balanceOf(this);
-    uint256 totalBalance = currentBalance.add(withdrawnAmount[token]);
+  function vestedAmount() public view returns (uint256) {
+    uint256 balance = token.balanceOf(this);
+    uint256 totalVesting = balance.add(withdrawnAmount);
 
     if (block.timestamp < cliff) {
       return 0;
-    } else if (block.timestamp >= start.add(duration) || revoked[token]) {
-      return totalBalance;
+    } else if (block.timestamp >= start.add(duration) || revoked) {
+      return totalVesting;
     } else {
-      return totalBalance.mul(block.timestamp.sub(start)).div(duration);
+      return totalVesting.mul(block.timestamp.sub(start)).div(duration);
     }
   }
 }
